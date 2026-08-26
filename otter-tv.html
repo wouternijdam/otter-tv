@@ -1,0 +1,626 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="referrer" content="strict-origin-when-cross-origin" />
+<title>Stream Rotator</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#141210; --panel:#1C1916; --field:#262019; --line:#352E25;
+    --text:#ECE6DA; --muted:#948B7B; --dim:#6C6459;
+    --signal:#F0A830;          /* the one accent: on-air amber */
+    --signal-soft:#3a2f18;
+    --live:#E5484D;
+    --radius:14px;
+    --mono:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace;
+    --sans:"Space Grotesk",system-ui,-apple-system,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:var(--bg);
+    color:var(--text);
+    font-family:var(--sans);
+    -webkit-font-smoothing:antialiased;
+    display:flex;justify-content:center;
+    padding:clamp(12px,3vw,32px);
+  }
+  .app{width:100%;max-width:1120px;margin:auto}
+
+  /* ---------- shared bits ---------- */
+  .eyebrow{
+    font-family:var(--mono);font-size:11px;letter-spacing:.22em;
+    text-transform:uppercase;color:var(--dim);
+  }
+  .btn{
+    font-family:var(--sans);font-size:14px;font-weight:600;
+    color:var(--text);background:var(--field);
+    border:1px solid var(--line);border-radius:10px;
+    padding:11px 16px;cursor:pointer;display:inline-flex;
+    align-items:center;gap:8px;line-height:1;transition:border-color .15s,background .15s,transform .05s;
+  }
+  .btn:hover{border-color:#4a4034;background:#2c261e}
+  .btn:active{transform:translateY(1px)}
+  .btn:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .btn.icon{padding:11px;min-width:42px;justify-content:center}
+  .btn.primary{background:var(--signal);color:#191307;border-color:var(--signal)}
+  .btn.primary:hover{background:#f6b743;border-color:#f6b743}
+  .btn[disabled]{opacity:.4;cursor:not-allowed}
+
+  /* ---------- setup screen ---------- */
+  .setup{
+    background:var(--panel);border:1px solid var(--line);
+    border-radius:var(--radius);padding:clamp(20px,4vw,40px);
+  }
+  .setup h1{
+    font-size:clamp(26px,4vw,38px);font-weight:700;margin:6px 0 6px;
+    letter-spacing:-.01em;
+  }
+  .setup .lede{color:var(--muted);max-width:56ch;margin:0 0 28px;font-size:15px}
+  .field-row{margin-bottom:16px}
+  .field-row label{display:block;margin-bottom:7px;font-size:13px;font-weight:600}
+  .field-row .chnum{font-family:var(--mono);color:var(--signal);margin-right:8px}
+  .input{
+    width:100%;font-family:var(--mono);font-size:14px;color:var(--text);
+    background:var(--field);border:1px solid var(--line);border-radius:10px;
+    padding:13px 14px;transition:border-color .15s;
+  }
+  .input::placeholder{color:var(--dim)}
+  .input:focus{outline:none;border-color:var(--signal)}
+  .input.bad{border-color:var(--live)}
+  .parse{font-family:var(--mono);font-size:11.5px;margin-top:6px;min-height:15px;color:var(--dim)}
+  .parse.ok{color:#8ab98a}
+  .parse.err{color:var(--live)}
+
+  .setup-foot{
+    display:flex;flex-wrap:wrap;align-items:end;gap:20px;
+    margin-top:26px;padding-top:24px;border-top:1px solid var(--line);
+  }
+  .interval label{display:block;font-size:13px;font-weight:600;margin-bottom:7px}
+  .interval-input{display:flex;align-items:center;gap:10px}
+  .interval-input .input{width:92px;text-align:center}
+  .interval-input span{color:var(--muted);font-size:14px}
+  .setup-foot .grow{flex:1 1 auto}
+  .hint{color:var(--dim);font-size:12.5px;max-width:44ch;line-height:1.5}
+
+  /* ---------- player screen ---------- */
+  .player{display:none;flex-direction:column;gap:16px}
+  .player.on{display:flex}
+
+  .stage{
+    position:relative;width:100%;aspect-ratio:16/9;background:#000;
+    border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+  }
+  .slot{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .35s ease}
+  .slot.active{opacity:1;pointer-events:auto}
+  .slot iframe{width:100%;height:100%;border:0;display:block}
+  .slot .unavailable{
+    position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+    flex-direction:column;gap:8px;color:var(--muted);font-family:var(--mono);
+    font-size:13px;text-align:center;padding:24px;
+  }
+  .slot.errored .unavailable{display:flex}
+
+  .onair{
+    position:absolute;top:14px;left:14px;z-index:5;pointer-events:none;
+    display:flex;align-items:center;gap:9px;
+    background:rgba(20,18,16,.72);backdrop-filter:blur(6px);
+    border:1px solid rgba(240,168,48,.5);border-radius:999px;
+    padding:7px 13px 7px 11px;
+  }
+  .dot{width:9px;height:9px;border-radius:50%;background:var(--live);box-shadow:0 0 0 0 rgba(229,72,77,.6);animation:pulse 2s infinite}
+  .onair .label{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--signal)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 rgba(229,72,77,.55)}70%{box-shadow:0 0 0 7px rgba(229,72,77,0)}100%{box-shadow:0 0 0 0 rgba(229,72,77,0)}}
+
+  /* console */
+  .console{
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
+    padding:16px;display:grid;gap:16px;
+    grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) auto;align-items:center;
+  }
+  /* channel strip */
+  .channels{display:flex;gap:8px;min-width:0}
+  .chan{
+    flex:1 1 0;min-width:0;text-align:left;cursor:pointer;
+    background:var(--field);border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;transition:border-color .15s,background .15s;
+  }
+  .chan:hover{border-color:#4a4034}
+  .chan:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+  .chan .k{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--dim)}
+  .chan .t{font-size:13px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chan.live{background:var(--signal-soft);border-color:var(--signal)}
+  .chan.live .k{color:var(--signal)}
+  .chan.live .t{color:var(--text)}
+  .chan.errored .t{color:var(--live)}
+
+  /* timecode */
+  .timecode{text-align:center}
+  .timecode .tc{
+    font-family:var(--mono);font-weight:700;font-size:clamp(30px,6vw,42px);
+    letter-spacing:.02em;line-height:1;font-variant-numeric:tabular-nums;
+  }
+  .timecode.paused .tc{color:var(--dim)}
+  .timecode .cap{font-family:var(--mono);font-size:10.5px;letter-spacing:.18em;text-transform:uppercase;color:var(--dim);margin-top:7px}
+  .progress{height:4px;background:var(--field);border-radius:999px;margin-top:10px;overflow:hidden}
+  .progress .bar{height:100%;width:0;background:var(--signal);border-radius:999px}
+  .ivlive{display:flex;align-items:center;justify-content:center;gap:6px;margin-top:9px}
+  .ivlive label,.ivlive span{font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}
+  .ivlive .input{width:62px;text-align:center;padding:5px 6px;font-size:12px}
+
+  .controls{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+
+  @media (max-width:760px){
+    .console{grid-template-columns:1fr}
+    .controls{justify-content:center}
+    .timecode{order:-1}
+  }
+  @media (prefers-reduced-motion:reduce){
+    .dot{animation:none}.slot{transition:none}
+  }
+  svg{display:block}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ SETUP ============ -->
+  <section class="setup" id="setup">
+    <div class="eyebrow">Live rotation</div>
+    <h1>Stream Rotator</h1>
+    <p class="lede">Drop in three YouTube links. One plays at a time, full-screen, and the feed cuts to the next channel on a timer you set.</p>
+
+    <div class="field-row">
+      <label for="u0"><span class="chnum">CH 1</span>Stream link or ID</label>
+      <input class="input" id="u0" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false">
+      <div class="parse" id="p0"></div>
+    </div>
+    <div class="field-row">
+      <label for="u1"><span class="chnum">CH 2</span>Stream link or ID</label>
+      <input class="input" id="u1" placeholder="https://youtu.be/…" autocomplete="off" spellcheck="false">
+      <div class="parse" id="p1"></div>
+    </div>
+    <div class="field-row">
+      <label for="u2"><span class="chnum">CH 3</span>Stream link or ID</label>
+      <input class="input" id="u2" placeholder="https://www.youtube.com/live/…" autocomplete="off" spellcheck="false">
+      <div class="parse" id="p2"></div>
+    </div>
+
+    <div class="setup-foot">
+      <div class="interval">
+        <label for="iv">Switch every</label>
+        <div class="interval-input">
+          <input class="input" id="iv" type="number" min="0.25" step="0.25" value="3">
+          <span>minutes</span>
+        </div>
+      </div>
+      <div class="grow"></div>
+      <p class="hint">Streams start muted so the auto-switch keeps working — hit unmute on the channel you want to hear.</p>
+      <button class="btn primary" id="start">Start rotation →</button>
+    </div>
+  </section>
+
+  <!-- ============ PLAYER ============ -->
+  <section class="player" id="player">
+    <div class="stage">
+      <div class="slot" data-i="0"><div id="yt-0"></div><div class="unavailable">Channel 1 couldn’t load<br>check the link</div></div>
+      <div class="slot" data-i="1"><div id="yt-1"></div><div class="unavailable">Channel 2 couldn’t load<br>check the link</div></div>
+      <div class="slot" data-i="2"><div id="yt-2"></div><div class="unavailable">Channel 3 couldn’t load<br>check the link</div></div>
+      <div class="onair"><span class="dot"></span><span class="label" id="onairLabel">ON AIR · CH 1</span></div>
+    </div>
+
+    <div class="console">
+      <div class="channels" id="channels"></div>
+
+      <div class="timecode" id="timecode">
+        <div class="tc" id="tc">05:00</div>
+        <div class="progress"><div class="bar" id="bar"></div></div>
+        <div class="cap" id="tcCap">Next switch</div>
+        <div class="ivlive">
+          <label for="ivPlayer">every</label>
+          <input class="input" id="ivPlayer" type="number" min="0.25" step="0.25" value="3">
+          <span>min</span>
+        </div>
+      </div>
+
+      <div class="controls">
+        <button class="btn icon" id="prev" title="Previous channel" aria-label="Previous channel">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M11.5 3v10L5 8l6.5-5Z" fill="currentColor"/><rect x="3" y="3" width="1.6" height="10" rx=".5" fill="currentColor"/></svg>
+        </button>
+        <button class="btn" id="pause">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor" id="pauseIcon"><rect x="2" y="2" width="3.4" height="10" rx="1"/><rect x="8.6" y="2" width="3.4" height="10" rx="1"/></svg>
+          <span id="pauseLabel">Pause</span>
+        </button>
+        <button class="btn icon" id="next" title="Next channel" aria-label="Next channel">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M4.5 3v10L11 8 4.5 3Z" fill="currentColor"/><rect x="11.4" y="3" width="1.6" height="10" rx=".5" fill="currentColor"/></svg>
+        </button>
+        <button class="btn icon" id="mute" title="Unmute" aria-label="Unmute">
+          <svg width="17" height="17" viewBox="0 0 17 17" fill="none" id="muteIcon"><path d="M3 6h2.5L9 3v11L5.5 11H3V6Z" fill="currentColor"/><path d="M12 6l3 5M15 6l-3 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </button>
+        <button class="btn icon" id="full" title="Fullscreen" aria-label="Fullscreen">
+          <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 5V2h3M13 5V2h-3M2 10v3h3M13 10v3h-3"/></svg>
+        </button>
+        <button class="btn" id="edit">Edit</button>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // ---------- elements ----------
+  const $ = s => document.querySelector(s);
+  const setupEl=$("#setup"), playerEl=$("#player");
+  const urlInputs=[$("#u0"),$("#u1"),$("#u2")];
+  const parseEls=[$("#p0"),$("#p1"),$("#p2")];
+  const ivInput=$("#iv"), ivPlayer=$("#ivPlayer");
+  const channelsEl=$("#channels");
+  const tcEl=$("#tc"), barEl=$("#bar"), tcCapEl=$("#tcCap"), timecodeEl=$("#timecode");
+  const onairLabel=$("#onairLabel");
+  const slots=[...document.querySelectorAll(".slot")];
+
+  // ---------- state ----------
+  let streams=[];          // [{id,label}]
+  let intervalMs=300000;
+  let active=0;
+  let players=[];          // YT.Player instances
+  let ready=[false,false,false];
+  let errored=[false,false,false];
+  let rotating=true;
+  let muted=true;
+  let nextSwitchAt=0, remainingWhenPaused=0, tickTimer=null;
+  let apiLoading=false, apiReady=false;
+
+  // ---------- YouTube URL parsing ----------
+  function parseId(raw){
+    raw=(raw||"").trim();
+    if(!raw) return {ok:false,msg:""};
+    if(/^[a-zA-Z0-9_-]{11}$/.test(raw)) return {ok:true,id:raw};
+    let url;
+    try{ url=new URL(raw); }catch(e){ return {ok:false,msg:"Not a valid link or 11-char ID"}; }
+    const host=url.hostname.replace(/^www\./,"");
+    if(host==="youtu.be"){
+      const id=url.pathname.split("/").filter(Boolean)[0];
+      if(id&&/^[a-zA-Z0-9_-]{11}$/.test(id)) return {ok:true,id};
+    }
+    if(host.endsWith("youtube.com")||host.endsWith("youtube-nocookie.com")){
+      const v=url.searchParams.get("v");
+      if(v&&/^[a-zA-Z0-9_-]{11}$/.test(v)) return {ok:true,id:v};
+      const parts=url.pathname.split("/").filter(Boolean);
+      const kw=["live","embed","shorts","v"];
+      const i=parts.findIndex(p=>kw.includes(p));
+      if(i!==-1&&parts[i+1]&&/^[a-zA-Z0-9_-]{11}$/.test(parts[i+1])) return {ok:true,id:parts[i+1]};
+      if(/@|\/(c|user|channel)\//.test(url.pathname))
+        return {ok:false,msg:"That’s a channel link — open the live video and copy its URL (needs watch?v= or /live/)"};
+    }
+    return {ok:false,msg:"Couldn’t find a video ID in that link"};
+  }
+
+  function refreshParse(i){
+    const r=parseId(urlInputs[i].value);
+    const el=parseEls[i];
+    urlInputs[i].classList.toggle("bad", !!urlInputs[i].value && !r.ok);
+    if(!urlInputs[i].value){ el.textContent=""; el.className="parse"; }
+    else if(r.ok){ el.textContent="ID · "+r.id; el.className="parse ok"; }
+    else { el.textContent=r.msg; el.className="parse err"; }
+    return r;
+  }
+  urlInputs.forEach((inp,i)=>inp.addEventListener("input",()=>refreshParse(i)));
+  [ivInput,ivPlayer].forEach(el=>el&&el.addEventListener("input",()=>applyInterval(el.value)));
+
+  // ---------- persistence ----------
+  // Only the interval is remembered; the lineup below is the point of the page.
+  const IV_KEY="rotator:iv";
+  function saveConfig(){
+    try{ localStorage.setItem(IV_KEY, String(ivInput.value)); }catch(e){}
+  }
+  function loadConfig(){
+    try{
+      const v=localStorage.getItem(IV_KEY);
+      if(v&&parseFloat(v)>0){ ivInput.value=v; return true; }
+    }catch(e){}
+    return false;
+  }
+
+  // ---------- YouTube IFrame API ----------
+  function loadYT(cb){
+    if(apiReady){ cb(); return; }
+    window.__ytCb=window.__ytCb||[];
+    window.__ytCb.push(cb);
+    if(apiLoading) return;
+    apiLoading=true;
+    window.onYouTubeIframeAPIReady=function(){
+      apiReady=true;
+      (window.__ytCb||[]).forEach(fn=>fn());
+      window.__ytCb=[];
+    };
+    const s=document.createElement("script");
+    s.src="https://www.youtube.com/iframe_api";
+    document.head.appendChild(s);
+  }
+
+  function buildPlayers(){
+    // clear any previous players
+    players.forEach(p=>{ try{p.destroy();}catch(e){} });
+    players=[]; ready=[false,false,false]; errored=[false,false,false];
+    retryTimers.forEach(t=>clearTimeout(t)); retryTimers.length=0; retryCount.length=0;
+    slots.forEach(s=>s.classList.remove("errored"));
+    // recreate the inner target divs (destroy() removes them)
+    slots.forEach((slot,i)=>{
+      let t=document.getElementById("yt-"+i);
+      if(!t){ t=document.createElement("div"); t.id="yt-"+i; slot.insertBefore(t,slot.firstChild); }
+    });
+    streams.forEach((st,i)=>makePlayer(i));
+  }
+
+  function makePlayer(i){
+    const st=streams[i];
+    if(!st) return;
+    // Every channel autoplays muted and then simply never stops. A switch changes
+    // only which one is visible and which one has sound. Nothing is ever paused, so
+    // nothing has to be resumed without a user gesture and nothing falls behind the
+    // live edge - which is what all the earlier breakage came from.
+    const isHttp = location.protocol==="http:"||location.protocol==="https:";
+    const pv={autoplay:1,mute:1,playsinline:1,rel:0,modestbranding:1,fs:0};
+    if(isHttp) pv.origin=location.origin;
+    try{
+      players[i]=new YT.Player("yt-"+i,{
+        host:"https://www.youtube-nocookie.com",
+        videoId:st.id,
+        width:"100%",height:"100%",
+        playerVars:pv,
+        events:{
+          onReady:e=>{
+            ready[i]=true; retryCount[i]=0;
+            try{ e.target.mute(); e.target.playVideo(); }catch(err){}
+            if(i===active) activatePlayback();
+          },
+          onStateChange:e=>{                 // 2=paused 0=ended: nothing should stop
+            if(!teardown&&(e.data===2||e.data===0)){
+              try{ e.target.playVideo(); }catch(err){}
+            }
+          },
+          onError:()=>markErrored(i)
+        }
+      });
+    }catch(e){ markErrored(i); }
+  }
+
+  // A channel that errors drops out of the rotation, but NOT for good: give it a fresh
+  // player after a backoff, so one transient YouTube hiccup cannot retire a stream for
+  // the rest of the session. Give up only after it has failed repeatedly.
+  const RETRY_MS=45000, MAX_RETRIES=4;
+  const retryTimers=[], retryCount=[];
+  function markErrored(i){
+    errored[i]=true;
+    slots[i].classList.add("errored");
+    renderChannels();
+    retryCount[i]=(retryCount[i]||0)+1;
+    if(retryCount[i]>MAX_RETRIES) return;               // genuinely dead, stop trying
+    clearTimeout(retryTimers[i]);
+    retryTimers[i]=setTimeout(()=>reloadChannel(i), RETRY_MS*retryCount[i]);
+  }
+  function reloadChannel(i){
+    if(teardown||!streams[i]) return;
+    try{ players[i]&&players[i].destroy(); }catch(e){}
+    players[i]=null; ready[i]=false;
+    let t=document.getElementById("yt-"+i);
+    if(!t){ t=document.createElement("div"); t.id="yt-"+i; slots[i].insertBefore(t,slots[i].firstChild); }
+    errored[i]=false; slots[i].classList.remove("errored");
+    renderChannels();
+    makePlayer(i);
+  }
+
+  // ---------- rotation core ----------
+  // Switching is now only: which slot is visible, and which player has sound.
+  let teardown=false;
+  function activatePlayback(){
+    players.forEach((p,i)=>{
+      if(!p||typeof p.playVideo!=="function") return;
+      try{
+        if(i===active&&!muted){ p.unMute(); p.setVolume(100); }
+        else{ p.mute(); }
+        if(typeof p.getPlayerState==="function"&&p.getPlayerState()!==1) p.playVideo();
+      }catch(e){}
+    });
+  }
+
+  function setActive(i,{resetTimer=true,fromUser=false}={}){
+    active=((i%streams.length)+streams.length)%streams.length;
+    slots.forEach((s,idx)=>s.classList.toggle("active",idx===active));
+    onairLabel.textContent="ON AIR · CH "+(active+1);
+    activatePlayback();
+    renderChannels();
+    if(resetTimer) armTimer();
+  }
+
+  // One place that owns the interval, so changing it anywhere takes effect at once
+  // instead of only on the next restart.
+  function applyInterval(raw,{rearm=true}={}){
+    const mins=parseFloat(raw);
+    if(!isFinite(mins)||mins<=0) return false;
+    intervalMs=Math.max(15000,mins*60000);
+    if(ivInput&&ivInput.value!==String(mins)) ivInput.value=mins;
+    if(ivPlayer&&ivPlayer.value!==String(mins)) ivPlayer.value=mins;
+    if(rearm){
+      if(rotating){ nextSwitchAt=Date.now()+intervalMs; }
+      else{ remainingWhenPaused=intervalMs; }
+      paintClock(rotating?intervalMs:remainingWhenPaused);
+    }
+    saveConfig();
+    return true;
+  }
+
+  const HOLD_MS=15000;   // re-check cadence while every other channel is down
+  function armTimer(ms){
+    nextSwitchAt=Date.now()+(ms||intervalMs);
+    remainingWhenPaused=0;
+  }
+
+  function tick(){
+    if(rotating){
+      const remain=nextSwitchAt-Date.now();
+      if(remain<=0){ advance(); return; }
+      paintClock(remain);
+    }else{
+      paintClock(remainingWhenPaused);
+    }
+  }
+  // Automatic step. step<n, never <=n: at step===n the candidate IS the current
+  // channel, so the old loop "advanced" onto itself whenever every other channel was
+  // errored - re-arming the full timer while the picture never changed.
+  function advance(){
+    const n=streams.length;
+    for(let step=1;step<n;step++){
+      const cand=(active+step)%n;
+      if(!errored[cand]){ setActive(cand); return; }
+    }
+    // Nothing else is up. Hold this channel and look again shortly rather than
+    // pretending we cut - a full interval reset here just looks like a dead timer.
+    armTimer(HOLD_MS);
+  }
+
+  function paintClock(ms){
+    ms=Math.max(0,ms);
+    const total=Math.ceil(ms/1000);
+    const m=Math.floor(total/60), s=total%60;
+    tcEl.textContent=String(m).padStart(2,"0")+":"+String(s).padStart(2,"0");
+    const frac=1-(ms/intervalMs);
+    barEl.style.width=Math.min(100,Math.max(0,frac*100))+"%";
+  }
+
+  function renderChannels(){
+    channelsEl.innerHTML="";
+    streams.forEach((st,i)=>{
+      const b=document.createElement("button");
+      b.className="chan"+(i===active?" live":"")+(errored[i]?" errored":"");
+      b.innerHTML='<div class="k">CH '+(i+1)+(i===active?' · LIVE':'')+'</div>'
+                 +'<div class="t">'+(errored[i]?'Unavailable':st.label)+'</div>';
+      b.addEventListener("click",()=>setActive(i,{fromUser:true}));
+      channelsEl.appendChild(b);
+    });
+  }
+
+  // ---------- controls ----------
+  $("#prev").addEventListener("click",()=>setActive(active-1,{fromUser:true}));
+  $("#next").addEventListener("click",()=>setActive(active+1,{fromUser:true}));
+
+  const pauseLabel=$("#pauseLabel"), pauseIcon=$("#pauseIcon");
+  $("#pause").addEventListener("click",()=>{
+    rotating=!rotating;
+    if(rotating){
+      nextSwitchAt=Date.now()+ (remainingWhenPaused||intervalMs);
+      remainingWhenPaused=0;
+      pauseLabel.textContent="Pause";
+      pauseIcon.innerHTML='<rect x="2" y="2" width="3.4" height="10" rx="1"/><rect x="8.6" y="2" width="3.4" height="10" rx="1"/>';
+      timecodeEl.classList.remove("paused");
+      tcCapEl.textContent="Next switch";
+    }else{
+      remainingWhenPaused=nextSwitchAt-Date.now();
+      pauseLabel.textContent="Resume";
+      pauseIcon.innerHTML='<path d="M3 2l9 5-9 5V2Z"/>';
+      timecodeEl.classList.add("paused");
+      tcCapEl.textContent="Rotation held";
+    }
+  });
+
+  const muteIcon=$("#muteIcon"), muteBtn=$("#mute");
+  function paintMute(){
+    muteBtn.title=muted?"Unmute":"Mute";
+    muteBtn.setAttribute("aria-label",muteBtn.title);
+    muteIcon.innerHTML = muted
+      ? '<path d="M3 6h2.5L9 3v11L5.5 11H3V6Z" fill="currentColor"/><path d="M12 6l3 5M15 6l-3 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'
+      : '<path d="M3 6h2.5L9 3v11L5.5 11H3V6Z" fill="currentColor"/><path d="M11.5 5.5a4 4 0 010 6M13.5 4a6.5 6.5 0 010 9" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/>';
+  }
+  muteBtn.addEventListener("click",()=>{
+    muted=!muted;
+    activatePlayback();
+    paintMute();
+  });
+
+  $("#full").addEventListener("click",()=>{
+    const st=document.querySelector(".stage");
+    if(document.fullscreenElement){ document.exitFullscreen(); }
+    else if(st.requestFullscreen){ st.requestFullscreen().catch(()=>{}); }
+  });
+
+  $("#edit").addEventListener("click",()=>{
+    if(tickTimer){ clearInterval(tickTimer); tickTimer=null; }
+    teardown=true;
+    retryTimers.forEach(t=>clearTimeout(t)); retryTimers.length=0;
+    players.forEach(p=>{ try{p.destroy();}catch(e){} });
+    players=[];
+    playerEl.classList.remove("on");
+    setupEl.style.display="";
+  });
+
+  // keyboard: ← → prev/next, space pause, m mute, f fullscreen
+  document.addEventListener("keydown",e=>{
+    if(!playerEl.classList.contains("on")) return;
+    if(["INPUT","TEXTAREA"].includes(document.activeElement.tagName)) return;
+    if(e.key==="ArrowRight"){ setActive(active+1,{fromUser:true}); }
+    else if(e.key==="ArrowLeft"){ setActive(active-1,{fromUser:true}); }
+    else if(e.key===" "){ e.preventDefault(); $("#pause").click(); }
+    else if(e.key.toLowerCase()==="m"){ muteBtn.click(); }
+    else if(e.key.toLowerCase()==="f"){ $("#full").click(); }
+  });
+
+  // ---------- start ----------
+  $("#start").addEventListener("click",()=>{
+    const parsed=urlInputs.map((_,i)=>refreshParse(i));
+    const chosen=[];
+    parsed.forEach((r,i)=>{ if(r.ok) chosen.push({id:r.id,label:"Channel "+(i+1)}); });
+    if(chosen.length===0){
+      parseEls[0].textContent="Add at least one valid stream to begin.";
+      parseEls[0].className="parse err";
+      return;
+    }
+    streams=chosen;
+    if(!applyInterval(ivInput.value,{rearm:false})) intervalMs=300000;
+
+    saveConfig();
+
+    // hide unused slots
+    slots.forEach((s,i)=>{ s.style.display = i<streams.length ? "" : "none"; });
+
+    setupEl.style.display="none";
+    playerEl.classList.add("on");
+
+    active=0; rotating=true; muted=true; teardown=false;
+    pauseLabel.textContent="Pause"; timecodeEl.classList.remove("paused"); tcCapEl.textContent="Next switch";
+    paintMute();
+    renderChannels();
+    slots.forEach((s,idx)=>s.classList.toggle("active",idx===0));
+    onairLabel.textContent="ON AIR · CH 1";
+    paintClock(intervalMs);
+
+    // Start the rotation clock first: it is independent of YouTube, so a slow or
+    // failed iframe-API load can no longer leave the countdown frozen while the
+    // manual controls (bound at parse time) keep working.
+    armTimer();
+    if(tickTimer) clearInterval(tickTimer);
+    tickTimer=setInterval(tick,250);
+
+    loadYT(()=>{ try{ buildPlayers(); }catch(e){} });
+  });
+
+  // ---------- hardcoded lineup: auto-start, no setup needed ----------
+  urlInputs[0].value="https://www.youtube.com/watch?v=9mg9PoFEX2U";
+  urlInputs[1].value="https://www.youtube.com/watch?v=_KXHUb0wFRE";
+  urlInputs[2].value="https://www.youtube.com/watch?v=abbR-Ttd-cA";
+  loadConfig();                              // a saved interval wins over the default
+  if(!ivInput.value) ivInput.value="3";
+  applyInterval(ivInput.value,{rearm:false});
+  urlInputs.forEach((_,i)=>refreshParse(i));
+  $("#start").click();
+})();
+</script>
+</body>
+</html>
