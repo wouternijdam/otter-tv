@@ -26,10 +26,12 @@
     color:var(--text);
     font-family:var(--sans);
     -webkit-font-smoothing:antialiased;
-    display:flex;justify-content:center;
+    display:flex;justify-content:center;align-items:center;
     padding:clamp(12px,3vw,32px);
   }
-  .app{width:100%;max-width:1120px;margin:auto}
+  .app{width:100%;max-width:1120px;margin:auto;transition:max-width .25s ease}
+  /* the player screen is a kiosk view, not a form — let it use the whole window */
+  .app.theater{max-width:min(2000px,96vw)}
 
   /* ---------- shared bits ---------- */
   .eyebrow{
@@ -94,6 +96,9 @@
   .stage{
     position:relative;width:100%;aspect-ratio:16/9;background:#000;
     border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
+    /* cap by viewport height too, so a wide-but-short window can't grow the
+       16:9 stage tall enough to push the console below the fold */
+    max-height:calc(100dvh - 240px);
   }
   .screen{position:absolute;inset:0;transition:opacity .2s ease}
   .screen iframe{width:100%;height:100%;border:0;display:block}
@@ -128,12 +133,12 @@
   .console{
     background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     padding:16px;display:grid;gap:16px;
-    grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;align-items:center;
+    grid-template-columns:minmax(0,1.6fr) minmax(0,1fr) auto;align-items:center;
   }
-  /* channel strip */
-  .channels{display:flex;flex-wrap:wrap;gap:8px;min-width:0;align-content:center}
+  /* channel strip — a fixed 4-wide grid, so up to 8 channels lay out as 4x2 */
+  .channels{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;min-width:0}
   .chan{
-    flex:1 1 90px;min-width:78px;text-align:left;cursor:pointer;
+    min-width:0;text-align:left;cursor:pointer;
     background:var(--field);border:1px solid var(--line);border-radius:10px;
     padding:9px 11px;transition:border-color .15s,background .15s;
   }
@@ -141,6 +146,10 @@
   .chan:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
   .chan .k{font-family:var(--mono);font-size:11px;letter-spacing:.12em;color:var(--dim)}
   .chan .t{font-size:13px;color:var(--muted);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .chan .t .txt{display:inline-block}
+  .chan .t.marquee{text-overflow:clip}
+  .chan .t.marquee .txt{animation:marquee linear infinite}
+  @keyframes marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
   .chan.live{background:var(--signal-soft);border-color:var(--signal)}
   .chan.live .k{color:var(--signal)}
   .chan.live .t{color:var(--text)}
@@ -166,6 +175,9 @@
     .console{grid-template-columns:1fr}
     .controls{justify-content:center}
     .timecode{order:-1}
+  }
+  @media (max-width:480px){
+    .channels{grid-template-columns:repeat(2,minmax(0,1fr))}
   }
   @media (prefers-reduced-motion:reduce){
     .dot{animation:none}.spin{animation:none}.screen{transition:none}
@@ -251,10 +263,11 @@
 
   // How many channel slots the setup screen offers. Bump this to support more —
   // nothing else in here assumes a fixed count.
-  const CHANNEL_COUNT = 6;
+  const CHANNEL_COUNT = 8;
 
   // ---------- elements ----------
   const $ = s => document.querySelector(s);
+  const appEl=$(".app");
   const setupEl=$("#setup"), playerEl=$("#player");
   const fieldsEl=$("#fields");
   const urlInputs=[], parseEls=[];
@@ -492,12 +505,59 @@
   function renderChannels(){
     channelsEl.innerHTML="";
     streams.forEach((st,i)=>{
+      const isLive=i===active, isErrored=isLive&&errored[i];
       const b=document.createElement("button");
-      b.className="chan"+(i===active?" live":"")+(i===active&&errored[i]?" errored":"");
-      b.innerHTML='<div class="k">CH '+(i+1)+(i===active?' · LIVE':'')+'</div>'
-                 +'<div class="t">'+(i===active&&errored[i]?'Unavailable':st.label)+'</div>';
+      b.className="chan"+(isLive?" live":"")+(isErrored?" errored":"");
+
+      const k=document.createElement("div");
+      k.className="k";
+      k.textContent="CH "+(i+1)+(isLive?" · LIVE":"");
+
+      const t=document.createElement("div");
+      t.className="t";
+      const txt=document.createElement("span");
+      txt.className="txt";
+      txt.textContent=isErrored?"Unavailable":(st.title||st.label);
+      t.appendChild(txt);
+
+      b.appendChild(k); b.appendChild(t);
       b.addEventListener("click",()=>tuneTo(i));
       channelsEl.appendChild(b);
+    });
+    setupMarquee();
+  }
+
+  // There's only ~150px of tile to show a title in. Every tile just clips to its
+  // first part via CSS ellipsis - scrolling all of them would be noisy - except the
+  // live one, which gets the full title as a looping marquee if it doesn't fit.
+  const prefersReducedMotion=window.matchMedia&&window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function setupMarquee(){
+    const liveT=channelsEl.querySelector(".chan.live .t");
+    if(!liveT||prefersReducedMotion) return;
+    const txt=liveT.querySelector(".txt");
+    const overflow=txt.scrollWidth-liveT.clientWidth;
+    if(overflow<=4) return;
+    const original=txt.textContent;
+    txt.textContent=original+"    •    "+original;
+    liveT.classList.add("marquee");
+    txt.style.animationDuration=Math.max(6,txt.scrollWidth/40)+"s";
+  }
+
+  // ---------- titles ----------
+  // The channel picker starts out showing "Channel N" and upgrades to the real
+  // video title as soon as YouTube's oEmbed endpoint resolves it (no API key
+  // needed). A failed/slow lookup just leaves the fallback in place.
+  function fetchTitle(id){
+    const url="https://www.youtube.com/oembed?format=json&url="+encodeURIComponent("https://www.youtube.com/watch?v="+id);
+    return fetch(url).then(r=>r.ok?r.json():null).then(j=>j&&j.title?j.title:null).catch(()=>null);
+  }
+  function loadTitles(){
+    streams.forEach(st=>{
+      fetchTitle(st.id).then(title=>{
+        if(!title||teardown) return;
+        st.title=title;
+        renderChannels();
+      });
     });
   }
 
@@ -552,6 +612,7 @@
     if(activePlayer){ try{ activePlayer.destroy(); }catch(e){} activePlayer=null; }
     stageEl.classList.remove("tuning","errored");
     playerEl.classList.remove("on");
+    appEl.classList.remove("theater");
     setupEl.style.display="";
   });
 
@@ -584,6 +645,7 @@
 
     setupEl.style.display="none";
     playerEl.classList.add("on");
+    appEl.classList.add("theater");
 
     rotating=true; muted=true; teardown=false; consecutiveErrors=0;
     pauseLabel.textContent="Pause"; timecodeEl.classList.remove("paused"); tcCapEl.textContent="Next switch";
@@ -598,6 +660,7 @@
     tickTimer=setInterval(tick,250);
 
     tuneTo(0,{resetTimer:false});
+    loadTitles();
   });
 
   // ---------- default lineup: pre-filled, auto-start, no setup needed ----------
