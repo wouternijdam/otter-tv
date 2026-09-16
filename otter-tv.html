@@ -95,15 +95,23 @@
     position:relative;width:100%;aspect-ratio:16/9;background:#000;
     border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
   }
-  .slot{position:absolute;inset:0;opacity:0;pointer-events:none;transition:opacity .35s ease}
-  .slot.active{opacity:1;pointer-events:auto}
-  .slot iframe{width:100%;height:100%;border:0;display:block}
-  .slot .unavailable{
+  .screen{position:absolute;inset:0;transition:opacity .2s ease}
+  .screen iframe{width:100%;height:100%;border:0;display:block}
+  .stage.tuning .screen,.stage.errored .screen{opacity:.2}
+
+  .tuning-ov,.error-ov{
     position:absolute;inset:0;display:none;align-items:center;justify-content:center;
-    flex-direction:column;gap:8px;color:var(--muted);font-family:var(--mono);
-    font-size:13px;text-align:center;padding:24px;
+    flex-direction:column;gap:10px;color:var(--muted);font-family:var(--mono);
+    font-size:12.5px;letter-spacing:.08em;text-transform:uppercase;text-align:center;padding:24px;
   }
-  .slot.errored .unavailable{display:flex}
+  .stage.tuning .tuning-ov{display:flex}
+  .stage.errored .error-ov{display:flex;color:var(--live)}
+  .spin{
+    width:22px;height:22px;border-radius:50%;
+    border:2.5px solid rgba(240,168,48,.25);border-top-color:var(--signal);
+    animation:spin .8s linear infinite;
+  }
+  @keyframes spin{to{transform:rotate(360deg)}}
 
   .onair{
     position:absolute;top:14px;left:14px;z-index:5;pointer-events:none;
@@ -120,14 +128,14 @@
   .console{
     background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);
     padding:16px;display:grid;gap:16px;
-    grid-template-columns:minmax(0,1.1fr) minmax(0,1fr) auto;align-items:center;
+    grid-template-columns:minmax(0,1.2fr) minmax(0,1fr) auto;align-items:center;
   }
   /* channel strip */
-  .channels{display:flex;gap:8px;min-width:0}
+  .channels{display:flex;flex-wrap:wrap;gap:8px;min-width:0;align-content:center}
   .chan{
-    flex:1 1 0;min-width:0;text-align:left;cursor:pointer;
+    flex:1 1 90px;min-width:78px;text-align:left;cursor:pointer;
     background:var(--field);border:1px solid var(--line);border-radius:10px;
-    padding:10px 12px;transition:border-color .15s,background .15s;
+    padding:9px 11px;transition:border-color .15s,background .15s;
   }
   .chan:hover{border-color:#4a4034}
   .chan:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
@@ -160,7 +168,7 @@
     .timecode{order:-1}
   }
   @media (prefers-reduced-motion:reduce){
-    .dot{animation:none}.slot{transition:none}
+    .dot{animation:none}.spin{animation:none}.screen{transition:none}
   }
   svg{display:block}
 </style>
@@ -172,23 +180,9 @@
   <section class="setup" id="setup">
     <div class="eyebrow">Live rotation</div>
     <h1>Stream Rotator</h1>
-    <p class="lede">Drop in three YouTube links. One plays at a time, full-screen, and the feed cuts to the next channel on a timer you set.</p>
+    <p class="lede" id="lede">Drop in YouTube links. One plays at a time, full-screen, and the feed cuts to the next channel on a timer you set.</p>
 
-    <div class="field-row">
-      <label for="u0"><span class="chnum">CH 1</span>Stream link or ID</label>
-      <input class="input" id="u0" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false">
-      <div class="parse" id="p0"></div>
-    </div>
-    <div class="field-row">
-      <label for="u1"><span class="chnum">CH 2</span>Stream link or ID</label>
-      <input class="input" id="u1" placeholder="https://youtu.be/…" autocomplete="off" spellcheck="false">
-      <div class="parse" id="p1"></div>
-    </div>
-    <div class="field-row">
-      <label for="u2"><span class="chnum">CH 3</span>Stream link or ID</label>
-      <input class="input" id="u2" placeholder="https://www.youtube.com/live/…" autocomplete="off" spellcheck="false">
-      <div class="parse" id="p2"></div>
-    </div>
+    <div id="fields"></div>
 
     <div class="setup-foot">
       <div class="interval">
@@ -199,17 +193,17 @@
         </div>
       </div>
       <div class="grow"></div>
-      <p class="hint">Streams start muted so the auto-switch keeps working — hit unmute on the channel you want to hear.</p>
+      <p class="hint">Only the on-air channel is ever loaded. Switching (auto or manual) tunes in fresh at the live edge — nothing sits buffering off-screen.</p>
       <button class="btn primary" id="start">Start rotation →</button>
     </div>
   </section>
 
   <!-- ============ PLAYER ============ -->
   <section class="player" id="player">
-    <div class="stage">
-      <div class="slot" data-i="0"><div id="yt-0"></div><div class="unavailable">Channel 1 couldn’t load<br>check the link</div></div>
-      <div class="slot" data-i="1"><div id="yt-1"></div><div class="unavailable">Channel 2 couldn’t load<br>check the link</div></div>
-      <div class="slot" data-i="2"><div id="yt-2"></div><div class="unavailable">Channel 3 couldn’t load<br>check the link</div></div>
+    <div class="stage" id="stage">
+      <div class="screen" id="screen"><div id="yt-active"></div></div>
+      <div class="tuning-ov"><div class="spin"></div><span>Tuning in…</span></div>
+      <div class="error-ov">Channel unavailable<br><span id="errCh"></span></div>
       <div class="onair"><span class="dot"></span><span class="label" id="onairLabel">ON AIR · CH 1</span></div>
     </div>
 
@@ -255,28 +249,49 @@
 (function(){
   "use strict";
 
+  // How many channel slots the setup screen offers. Bump this to support more —
+  // nothing else in here assumes a fixed count.
+  const CHANNEL_COUNT = 6;
+
   // ---------- elements ----------
   const $ = s => document.querySelector(s);
   const setupEl=$("#setup"), playerEl=$("#player");
-  const urlInputs=[$("#u0"),$("#u1"),$("#u2")];
-  const parseEls=[$("#p0"),$("#p1"),$("#p2")];
+  const fieldsEl=$("#fields");
+  const urlInputs=[], parseEls=[];
   const ivInput=$("#iv"), ivPlayer=$("#ivPlayer");
   const channelsEl=$("#channels");
   const tcEl=$("#tc"), barEl=$("#bar"), tcCapEl=$("#tcCap"), timecodeEl=$("#timecode");
   const onairLabel=$("#onairLabel");
-  const slots=[...document.querySelectorAll(".slot")];
+  const stageEl=$("#stage"), screenEl=$("#screen"), errChEl=$("#errCh");
+
+  // ---------- build the setup fields for CHANNEL_COUNT channels ----------
+  $("#lede").textContent="Drop in up to "+CHANNEL_COUNT+" YouTube links. One plays at a time, full-screen, and the feed cuts to the next channel on a timer you set.";
+  for(let i=0;i<CHANNEL_COUNT;i++){
+    const row=document.createElement("div");
+    row.className="field-row";
+    row.innerHTML=
+      '<label for="u'+i+'"><span class="chnum">CH '+(i+1)+'</span>Stream link or ID</label>'+
+      '<input class="input" id="u'+i+'" placeholder="https://www.youtube.com/watch?v=…" autocomplete="off" spellcheck="false">'+
+      '<div class="parse" id="p'+i+'"></div>';
+    fieldsEl.appendChild(row);
+    urlInputs.push(row.querySelector("input"));
+    parseEls.push(row.querySelector(".parse"));
+  }
 
   // ---------- state ----------
   let streams=[];          // [{id,label}]
   let intervalMs=300000;
   let active=0;
-  let players=[];          // YT.Player instances
-  let ready=[false,false,false];
-  let errored=[false,false,false];
+  let activePlayer=null;   // the single on-air YT.Player — nothing else is ever loaded
+  let errored=[];          // per-channel, reflects the last attempt at that channel
   let rotating=true;
   let muted=true;
   let nextSwitchAt=0, remainingWhenPaused=0, tickTimer=null;
   let apiLoading=false, apiReady=false;
+  let teardown=false;
+  let gen=0;                // bumped on every tuneTo(); stale async callbacks check this and no-op
+  let consecutiveErrors=0;
+  let autoSkipTimer=null;
 
   // ---------- YouTube URL parsing ----------
   function parseId(raw){
@@ -346,99 +361,91 @@
     document.head.appendChild(s);
   }
 
-  function buildPlayers(){
-    // clear any previous players
-    players.forEach(p=>{ try{p.destroy();}catch(e){} });
-    players=[]; ready=[false,false,false]; errored=[false,false,false];
-    retryTimers.forEach(t=>clearTimeout(t)); retryTimers.length=0; retryCount.length=0;
-    slots.forEach(s=>s.classList.remove("errored"));
-    // recreate the inner target divs (destroy() removes them)
-    slots.forEach((slot,i)=>{
-      let t=document.getElementById("yt-"+i);
-      if(!t){ t=document.createElement("div"); t.id="yt-"+i; slot.insertBefore(t,slot.firstChild); }
-    });
-    streams.forEach((st,i)=>makePlayer(i));
+  function ensureHolder(){
+    let t=document.getElementById("yt-active");
+    if(!t){ t=document.createElement("div"); t.id="yt-active"; screenEl.appendChild(t); }
+    return t;
   }
 
-  function makePlayer(i){
-    const st=streams[i];
-    if(!st) return;
-    // Every channel autoplays muted and then simply never stops. A switch changes
-    // only which one is visible and which one has sound. Nothing is ever paused, so
-    // nothing has to be resumed without a user gesture and nothing falls behind the
-    // live edge - which is what all the earlier breakage came from.
-    const isHttp = location.protocol==="http:"||location.protocol==="https:";
-    const pv={autoplay:1,mute:1,playsinline:1,rel:0,modestbranding:1,fs:0};
-    if(isHttp) pv.origin=location.origin;
+  function syncMute(){
+    if(!activePlayer||typeof activePlayer.mute!=="function") return;
     try{
-      players[i]=new YT.Player("yt-"+i,{
-        host:"https://www.youtube-nocookie.com",
-        videoId:st.id,
-        width:"100%",height:"100%",
-        playerVars:pv,
-        events:{
-          onReady:e=>{
-            ready[i]=true; retryCount[i]=0;
-            try{ e.target.mute(); e.target.playVideo(); }catch(err){}
-            if(i===active) activatePlayback();
-          },
-          onStateChange:e=>{                 // 2=paused 0=ended: nothing should stop
-            if(!teardown&&(e.data===2||e.data===0)){
-              try{ e.target.playVideo(); }catch(err){}
-            }
-          },
-          onError:()=>markErrored(i)
-        }
-      });
-    }catch(e){ markErrored(i); }
-  }
-
-  // A channel that errors drops out of the rotation, but NOT for good: give it a fresh
-  // player after a backoff, so one transient YouTube hiccup cannot retire a stream for
-  // the rest of the session. Give up only after it has failed repeatedly.
-  const RETRY_MS=45000, MAX_RETRIES=4;
-  const retryTimers=[], retryCount=[];
-  function markErrored(i){
-    errored[i]=true;
-    slots[i].classList.add("errored");
-    renderChannels();
-    retryCount[i]=(retryCount[i]||0)+1;
-    if(retryCount[i]>MAX_RETRIES) return;               // genuinely dead, stop trying
-    clearTimeout(retryTimers[i]);
-    retryTimers[i]=setTimeout(()=>reloadChannel(i), RETRY_MS*retryCount[i]);
-  }
-  function reloadChannel(i){
-    if(teardown||!streams[i]) return;
-    try{ players[i]&&players[i].destroy(); }catch(e){}
-    players[i]=null; ready[i]=false;
-    let t=document.getElementById("yt-"+i);
-    if(!t){ t=document.createElement("div"); t.id="yt-"+i; slots[i].insertBefore(t,slots[i].firstChild); }
-    errored[i]=false; slots[i].classList.remove("errored");
-    renderChannels();
-    makePlayer(i);
+      if(muted){ activePlayer.mute(); }
+      else{ activePlayer.unMute(); activePlayer.setVolume(100); }
+    }catch(e){}
   }
 
   // ---------- rotation core ----------
-  // Switching is now only: which slot is visible, and which player has sound.
-  let teardown=false;
-  function activatePlayback(){
-    players.forEach((p,i)=>{
-      if(!p||typeof p.playVideo!=="function") return;
+  // Only one channel is ever loaded: the on-air one. Switching — auto or manual —
+  // tears the current player down completely and builds a brand new one for the
+  // target channel. A fresh YT.Player for a live broadcast always joins at the
+  // live edge, so there is no backgrounded stream that could fall behind while
+  // muted/off-screen and show up delayed the moment you cut to it.
+  function tuneTo(target,{resetTimer=true}={}){
+    if(!streams.length) return;
+    active=((target%streams.length)+streams.length)%streams.length;
+    const myGen=++gen;
+    const st=streams[active];
+
+    clearTimeout(autoSkipTimer);
+    if(activePlayer){ try{ activePlayer.destroy(); }catch(e){} activePlayer=null; }
+    ensureHolder();
+
+    stageEl.classList.remove("errored");
+    stageEl.classList.add("tuning");
+    onairLabel.textContent="ON AIR · CH "+(active+1);
+    renderChannels();
+    if(resetTimer) armTimer();
+
+    loadYT(()=>{
+      if(myGen!==gen) return;              // superseded by a later switch
+      const isHttp=location.protocol==="http:"||location.protocol==="https:";
+      const pv={autoplay:1,mute:1,playsinline:1,rel:0,modestbranding:1,fs:0};
+      if(isHttp) pv.origin=location.origin;
       try{
-        if(i===active&&!muted){ p.unMute(); p.setVolume(100); }
-        else{ p.mute(); }
-        if(typeof p.getPlayerState==="function"&&p.getPlayerState()!==1) p.playVideo();
-      }catch(e){}
+        activePlayer=new YT.Player("yt-active",{
+          host:"https://www.youtube-nocookie.com",
+          videoId:st.id,
+          width:"100%",height:"100%",
+          playerVars:pv,
+          events:{
+            onReady:e=>{
+              if(myGen!==gen) return;
+              consecutiveErrors=0;
+              try{ e.target.playVideo(); }catch(err){}
+              syncMute();
+              stageEl.classList.remove("tuning");
+            },
+            onStateChange:e=>{             // 2=paused 0=ended: a live channel shouldn't sit there
+              if(myGen!==gen||teardown) return;
+              if(e.data===2||e.data===0){ try{ e.target.playVideo(); }catch(err){} }
+            },
+            onError:()=>{
+              if(myGen!==gen) return;
+              markErrored();
+            }
+          }
+        });
+      }catch(e){ if(myGen===gen) markErrored(); }
     });
   }
 
-  function setActive(i,{resetTimer=true,fromUser=false}={}){
-    active=((i%streams.length)+streams.length)%streams.length;
-    slots.forEach((s,idx)=>s.classList.toggle("active",idx===active));
-    onairLabel.textContent="ON AIR · CH "+(active+1);
-    activatePlayback();
+  // A channel that errors on tune-in doesn't get to sit there for the whole interval —
+  // hop to the next one shortly after. If every channel in the lineup fails in a row,
+  // stop auto-hopping (that's a real outage, not a bad link) and let the normal timer
+  // simply retry the lineup again on its own schedule.
+  const AUTO_SKIP_MS=4000;
+  function markErrored(){
+    errored[active]=true;
+    stageEl.classList.remove("tuning");
+    stageEl.classList.add("errored");
+    errChEl.textContent="CH "+(active+1)+" — check the link";
     renderChannels();
-    if(resetTimer) armTimer();
+    consecutiveErrors++;
+    if(streams.length<=1||consecutiveErrors>=streams.length) return;
+    const myGen=gen;
+    clearTimeout(autoSkipTimer);
+    autoSkipTimer=setTimeout(()=>{ if(myGen===gen) tuneTo(active+1); }, AUTO_SKIP_MS);
   }
 
   // One place that owns the interval, so changing it anywhere takes effect at once
@@ -458,7 +465,6 @@
     return true;
   }
 
-  const HOLD_MS=15000;   // re-check cadence while every other channel is down
   function armTimer(ms){
     nextSwitchAt=Date.now()+(ms||intervalMs);
     remainingWhenPaused=0;
@@ -467,24 +473,11 @@
   function tick(){
     if(rotating){
       const remain=nextSwitchAt-Date.now();
-      if(remain<=0){ advance(); return; }
+      if(remain<=0){ tuneTo(active+1); return; }
       paintClock(remain);
     }else{
       paintClock(remainingWhenPaused);
     }
-  }
-  // Automatic step. step<n, never <=n: at step===n the candidate IS the current
-  // channel, so the old loop "advanced" onto itself whenever every other channel was
-  // errored - re-arming the full timer while the picture never changed.
-  function advance(){
-    const n=streams.length;
-    for(let step=1;step<n;step++){
-      const cand=(active+step)%n;
-      if(!errored[cand]){ setActive(cand); return; }
-    }
-    // Nothing else is up. Hold this channel and look again shortly rather than
-    // pretending we cut - a full interval reset here just looks like a dead timer.
-    armTimer(HOLD_MS);
   }
 
   function paintClock(ms){
@@ -500,17 +493,17 @@
     channelsEl.innerHTML="";
     streams.forEach((st,i)=>{
       const b=document.createElement("button");
-      b.className="chan"+(i===active?" live":"")+(errored[i]?" errored":"");
+      b.className="chan"+(i===active?" live":"")+(i===active&&errored[i]?" errored":"");
       b.innerHTML='<div class="k">CH '+(i+1)+(i===active?' · LIVE':'')+'</div>'
-                 +'<div class="t">'+(errored[i]?'Unavailable':st.label)+'</div>';
-      b.addEventListener("click",()=>setActive(i,{fromUser:true}));
+                 +'<div class="t">'+(i===active&&errored[i]?'Unavailable':st.label)+'</div>';
+      b.addEventListener("click",()=>tuneTo(i));
       channelsEl.appendChild(b);
     });
   }
 
   // ---------- controls ----------
-  $("#prev").addEventListener("click",()=>setActive(active-1,{fromUser:true}));
-  $("#next").addEventListener("click",()=>setActive(active+1,{fromUser:true}));
+  $("#prev").addEventListener("click",()=>tuneTo(active-1));
+  $("#next").addEventListener("click",()=>tuneTo(active+1));
 
   const pauseLabel=$("#pauseLabel"), pauseIcon=$("#pauseIcon");
   $("#pause").addEventListener("click",()=>{
@@ -541,7 +534,7 @@
   }
   muteBtn.addEventListener("click",()=>{
     muted=!muted;
-    activatePlayback();
+    syncMute();
     paintMute();
   });
 
@@ -553,10 +546,11 @@
 
   $("#edit").addEventListener("click",()=>{
     if(tickTimer){ clearInterval(tickTimer); tickTimer=null; }
+    clearTimeout(autoSkipTimer);
     teardown=true;
-    retryTimers.forEach(t=>clearTimeout(t)); retryTimers.length=0;
-    players.forEach(p=>{ try{p.destroy();}catch(e){} });
-    players=[];
+    gen++;
+    if(activePlayer){ try{ activePlayer.destroy(); }catch(e){} activePlayer=null; }
+    stageEl.classList.remove("tuning","errored");
     playerEl.classList.remove("on");
     setupEl.style.display="";
   });
@@ -565,8 +559,8 @@
   document.addEventListener("keydown",e=>{
     if(!playerEl.classList.contains("on")) return;
     if(["INPUT","TEXTAREA"].includes(document.activeElement.tagName)) return;
-    if(e.key==="ArrowRight"){ setActive(active+1,{fromUser:true}); }
-    else if(e.key==="ArrowLeft"){ setActive(active-1,{fromUser:true}); }
+    if(e.key==="ArrowRight"){ tuneTo(active+1); }
+    else if(e.key==="ArrowLeft"){ tuneTo(active-1); }
     else if(e.key===" "){ e.preventDefault(); $("#pause").click(); }
     else if(e.key.toLowerCase()==="m"){ muteBtn.click(); }
     else if(e.key.toLowerCase()==="f"){ $("#full").click(); }
@@ -583,22 +577,17 @@
       return;
     }
     streams=chosen;
+    errored=streams.map(()=>false);
     if(!applyInterval(ivInput.value,{rearm:false})) intervalMs=300000;
 
     saveConfig();
 
-    // hide unused slots
-    slots.forEach((s,i)=>{ s.style.display = i<streams.length ? "" : "none"; });
-
     setupEl.style.display="none";
     playerEl.classList.add("on");
 
-    active=0; rotating=true; muted=true; teardown=false;
+    rotating=true; muted=true; teardown=false; consecutiveErrors=0;
     pauseLabel.textContent="Pause"; timecodeEl.classList.remove("paused"); tcCapEl.textContent="Next switch";
     paintMute();
-    renderChannels();
-    slots.forEach((s,idx)=>s.classList.toggle("active",idx===0));
-    onairLabel.textContent="ON AIR · CH 1";
     paintClock(intervalMs);
 
     // Start the rotation clock first: it is independent of YouTube, so a slow or
@@ -608,13 +597,18 @@
     if(tickTimer) clearInterval(tickTimer);
     tickTimer=setInterval(tick,250);
 
-    loadYT(()=>{ try{ buildPlayers(); }catch(e){} });
+    tuneTo(0,{resetTimer:false});
   });
 
-  // ---------- hardcoded lineup: auto-start, no setup needed ----------
-  urlInputs[0].value="https://www.youtube.com/watch?v=9mg9PoFEX2U";
-  urlInputs[1].value="https://www.youtube.com/watch?v=_KXHUb0wFRE";
-  urlInputs[2].value="https://www.youtube.com/watch?v=abbR-Ttd-cA";
+  // ---------- default lineup: pre-filled, auto-start, no setup needed ----------
+  const DEFAULT_LINEUP=[
+    "https://www.youtube.com/watch?v=9mg9PoFEX2U",
+    "https://www.youtube.com/watch?v=_KXHUb0wFRE",
+    "https://www.youtube.com/watch?v=abbR-Ttd-cA",
+    "https://www.youtube.com/watch?v=tEtg5Kg3voQ",
+    "https://www.youtube.com/watch?v=w3LjpFhySTg"
+  ];
+  DEFAULT_LINEUP.forEach((url,i)=>{ if(urlInputs[i]) urlInputs[i].value=url; });
   loadConfig();                              // a saved interval wins over the default
   if(!ivInput.value) ivInput.value="3";
   applyInterval(ivInput.value,{rearm:false});
